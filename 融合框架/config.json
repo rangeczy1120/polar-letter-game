@@ -1,7 +1,7 @@
 {
   "warm_html": "../极夜来信-双击游玩.html",
   "horror_html": "../恐怖世界/游戏.html",
-  "output_html": "../极夜来信-双世界体验版.html",
+  "output_html": "旧联动网页.html",
   "warm_signal_id": "rest",
   "horror_signal_id": "integration-end-not-yet-implemented",
   "cycles": 1
