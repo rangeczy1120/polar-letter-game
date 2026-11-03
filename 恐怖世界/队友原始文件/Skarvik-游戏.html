@@ -23,6 +23,14 @@ canvas#scene{display:block;width:100%;height:100%;
   filter:saturate(.7) contrast(1.14) brightness(.98)}
 .hidden{display:none!important}
 
+/* v16 · 点到「选项」的时候必须看得见鼠标。
+   游戏本体 canvas 是 cursor:none（准星代替光标），一旦弹出面板 / 选项 / 卡片，
+   光标还是隐形的话，玩家就会以为「点了没反应」。这一层把系统光标放回来。 */
+body.uiopen, body.uiopen canvas#scene{cursor:default!important}
+body.uiopen .opt,body.uiopen .choice-opt,body.uiopen .m-btn,body.uiopen button,
+body.uiopen .sched-row,body.uiopen .lcard,body.uiopen .bin,
+body.uiopen .end-restart,body.uiopen #chStandBtn{cursor:pointer!important}
+
 /* ================= 后期 ================= */
 #vhs{position:fixed;inset:0;pointer-events:none;z-index:15}
 .vhs-scan{position:absolute;inset:0;opacity:.3;
@@ -1206,9 +1214,15 @@ class SoundEngine {
     this.clickBuf = b;
     return b;
   }
-  playMusicBox(times = 2){
+  playMusicBox(times = 1){
     if (!this.ready) return;
+    /* v17：一遍就够（原来放两遍 33 秒，极光 8 秒就回绿 → 玩家听着像「一直在响」）；
+       45 秒冷却，避免极光反复变红时一遍接一遍 */
+    if (performance.now() < (this.mbCool || 0)) return;
     this.stopMusicBox();
+    /* 音乐盒优先于底噪：把极光 drone 先退到 0，播完/停时还原 */
+    this._duck = this.auroraMode || 'green';
+    try { this.setAurora('none'); } catch(e){}
     const ctx = this.ctx;
     const BPM = 76, BEAT = 60/BPM, GAP = 0.04;      // 四分音符 0.789s
     const N = { C:523.25, D:587.33, E:659.25, F:698.46, G:783.99, A:880.00 };
@@ -1216,10 +1230,10 @@ class SoundEngine {
     const P2 = [['F',1],['F',1],['E',1],['E',1],['D',1],['D',1],['C',2]];
     const P3 = [['G',1],['G',1],['F',1],['F',1],['E',1],['E',1],['D',2]];
     const PASS = P1.concat(P2, P3, P3);             // 一遍：回到第一句前收住
-    const VOL = 0.055, HARM = 0.25, DECAY = 0.9, ATTACK = 0.008;
+    const VOL = 0.135, HARM = 0.30, DECAY = 0.9, ATTACK = 0.008;
 
     const out = ctx.createGain(); out.gain.value = 1;
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4200;
     out.connect(lp); lp.connect(this.master);
 
     const seq = [];
@@ -1261,13 +1275,20 @@ class SoundEngine {
     }
     const totalMs = (t - ctx.currentTime) * 1000 + 500;
     this.musicBox = { out, lp, stops };
+    this.mbCool = performance.now() + 45000;        // 45 秒内不重播
     clearTimeout(this.musicBoxT);
-    this.musicBoxT = setTimeout(()=>{ this.musicBox = null; }, totalMs);
+    this.musicBoxT = setTimeout(()=>{
+      this.musicBox = null;
+      try { this.setAurora(this._duck || 'green'); } catch(e){}
+      this._duck = null;
+    }, totalMs);
   }
   stopMusicBox(){
     if (!this.musicBox) return;
     const m = this.musicBox; this.musicBox = null;
     clearTimeout(this.musicBoxT);
+    try { this.setAurora(this._duck || 'green'); } catch(e){}
+    this._duck = null;
     try {
       const t = this.ctx.currentTime;
       m.out.gain.cancelScheduledValues(t);
@@ -3125,6 +3146,8 @@ function updateDoubles(dt, t){
     }
 
     // 与玩家距离：交互判定用
+    /* v17：屋内的分身不被 terrainHeight 拽到地板下面 */
+    if (d.indoor){ d.y = CABIN_Y; g.position.y = CABIN_Y; }
     d.dist = Math.hypot(d.x - player.pos.x, d.z - player.pos.z);
   }
 }
@@ -4202,9 +4225,9 @@ const MONOLOGUES = {
   callName: {
     kicker:'— 风雪里 —',
     text:'有人喊你的名字。<br>' +
-         '<span class="wrong">用的是你小时候的乳名。</span><br>' +
+         '<span class="wrong">用的是你小时候的乳名。丽芙。</span><br>' +
          '你没有告诉过任何人。',
-    voice:{ text:'（远处）小满。小满，你在哪儿。小满。',
+    voice:{ text:'（远处）丽芙。丽芙，你在哪儿。丽芙。',
             opts:{ female:false, rate:0.72, pitch:0.62, volume:1 } },
   },
   hum: {
@@ -4563,7 +4586,15 @@ function openChoice(kind){
   const V = ROOM_VERSIONS[currentRoom];
   let kicker = '', title = '', opts = [];
 
-  if (kind === 'fireplace'){
+  if (kind === 'ending'){
+    /* 第 4 夜 · 最后一封拆开后的分岔（两个结局） */
+    kicker = '— 第 4 天 · 最后一封 —';
+    title  = '你可以走了。也可以不走。';
+    opts = [
+      { n:'01', t:'走向亮着灯的方向', fn:()=> chEndingChoice('leave') },
+      { n:'02', t:'回头看一眼',       fn:()=> chEndingChoice('stay') },
+    ];
+  } else if (kind === 'fireplace'){
     kicker = '— 壁炉 —';
     title  = game.fireLit > 0
       ? '火还活着。要不要再添一根柴？'
@@ -4574,7 +4605,10 @@ function openChoice(kind){
     const n = game.hand.length;
     title  = n > 0 ? `盒子里还剩 ${n} 根。` : '盒子空了。';
     opts = [
-      { n:'01', t:'把手伸进去，把火柴收进口袋', fn:()=>{ game.hand = MATCH_INITIAL.map(m=>({...m, id: m.id + (game.nextMatchId+=3)-3 })); showCaption('你把三根火柴都揣进了口袋。铝盒轻得发空。', 3600); updateHUD(); } },
+      { n:'01', t:'把手伸进去，把火柴收进口袋', fn:()=>{
+          /* v17：补满到 3 根，不再硬重置 —— 否则在外面捡的火柴会被打回去 */
+          while (game.hand.length < 3) game.hand.push({ id: game.nextMatchId++, version: currentRoom });
+          showCaption('盒子里还剩三根。你把它们也揣进了口袋。', 3400); updateHUD(); } },
       { n:'02', t:'数一遍', fn:()=>{ countBox(); } },
       { n:'03', t:'把盖子合上', fn:()=>{} },
     ];
@@ -5255,6 +5289,23 @@ function sequencePanel(kicker, title, lines, onDone){
 
 /* ---- 杯子 ---- */
 function inspectCup(){
+  /* v17：第 2 / 4 夜各一句新话（面板里不打 terror 点，计数只算投递事件） */
+  if (CH.day === 2){
+    sequencePanel('— 杯子 —', '一只搪瓷杯', [
+      '杯口是温的。',
+      '<span class="wrong">杯子底下压着一圈水渍，是新的。</span>',
+      '你把它端起来，又放回去。放回去的时候，它是倒扣着的。',
+    ]);
+    return;
+  }
+  if (CH.day === 4){
+    sequencePanel('— 杯子 —', '一只搪瓷杯', [
+      '杯子在桌子正中间。',
+      '你不记得自己把它放到正中间。',
+      '<span class="wrong">杯口朝着门。像有人坐在这里，一直在等你进来。</span>',
+    ], ()=>{ sound.cutAll(900); silenceFlash(700); });
+    return;
+  }
   const seen = game.cupsSeen || (game.cupsSeen = new Set());
   if (currentRoom === 'C' && !seen.has('C')){
     seen.add('C');
@@ -5380,9 +5431,9 @@ function inspectWindow(){
     ]);
   } else {
     sequencePanel('— 西窗 —', '玻璃上结了霜', [
-      '霜上有一个掌印。',
-      '在你自己手印的旁边。',
-      '<span class="wrong">贴得很近，像是隔着一层玻璃，在看你。</span>',
+      '霜上有一块被擦开的地方。',
+      '擦痕是新的。',
+      '<span class="wrong">可你今晚没走到过这扇窗。</span>',
     ]);
   }
 }
@@ -6127,7 +6178,7 @@ window.__SKARVIK__.state = ()=>({
 window.__SKARVIK__.giveFire = (n)=>{ for(let i=0;i<n;i++){ game.fireLit++; } updateHUD(); lightFire(); };
 
 /* ============================================================
-   v15 ·「今夜三封信」—— 送信人主线
+   v17 ·「今夜三封信」—— 四夜版 · 恐怖递进
    ------------------------------------------------------------
    取信 → 送第一封 → 极光红 / 多出来的你 → 证明我是我 → 岔路 →
    送第二封 → 两扇一样的信箱 → 送第三封（收件人：你自己）→ 收班
@@ -6140,7 +6191,120 @@ const CH = {
   /* v15 时间线：第 1 天 → 第 2 天 → 第 4 天（第 3 天是缺的那一页） */
   day:1, slept:false, day2Read:false, knockDone:false, knockWatching:false,
   knockLookAt:0, knockT:[],
+  /* v16：四夜（温 / 寒 / 温 / 寒），每晚三封，睡一觉才算换夜 */
+  ending:'', finale:false, lastRead:false,
+  /* v17：恐怖强度计数（第 2 夜 5 / 第 4 夜 +9，跨夜累加不归零）；椅子是否已挪正 */
+  terror:0, chairMoved:false,
 };
+
+/* ============================================================
+   v16 · 四个晚上的文案表（纯数据，别处一行分支都不加）
+   ------------------------------------------------------------
+   第 1 夜 温：有人应门，每封换一句话
+   第 2 夜 寒：没人应门，信箱是满的，屋顶塌了
+   第 3 夜 温：灯又亮了，字迹是你的
+   第 4 夜 寒：三个地址是同一个门牌 —— 你自己家
+   ============================================================ */
+const NIGHT = {
+  1:{
+    take:{ k:'极夜邮局 · 交接', t:'三封信', lines:[
+      '麻绳一解，信就散了。纸是凉的，边角被反复捏过。',
+      '封口的蜡按过一个指印，比你的手指小一圈。',
+      '第一封写：<em>灯塔看守人 收</em>。',
+      '第二封写：<em>湖边那条船 收</em>。',
+      '第三封没有收件人，只在封口画了一扇门。',
+      '你把三封并排放好。第四封的位置是空的。'
+    ]},
+    A:{ k:'门前信箱', t:'第一封投出去了', lines:[
+      '铁皮响了一声，很轻。',
+      '门里有灯。有人应了一声「来了」。',
+      '你回头，极光正好红了一瞬 —— 像有人把炉子里的炭翻了一下。'
+    ]},
+    B:{ k:'林子边', t:'第二封投出去了', lines:[
+      '这次极光没有变。',
+      '船屋亮着灯。窗上贴着三张纸，边角翘起来了。',
+      '投递簿自己翻到最后一页。收件人那栏写的是三个字：<em>你自己</em>。'
+    ]},
+    C:{ k:'坡下 · 钉着铜牌的那只', t:'第三封投出去了', lines:[
+      '铜牌是凉的。信塞进去的一瞬间，你听见里面有东西接住了它 —— 不是纸的声音。',
+      '坡下很静。有人在数数，数到三就停了，又从一数起。',
+      '信箱里传出一句很轻的话：「第 2 天，换你写信了。」'
+    ]},
+  },
+  2:{
+    take:{ k:'极夜邮局 · 交接', t:'三封信', lines:[
+      '麻绳是解开的。你没有解。',
+      '三封信并排放着，纸是凉的，边角被捏过。',
+      '第一封：灯塔看守人 收。第二封：湖边那条船 收。第三封没有收件人。',
+      '窗上结着霜。昨天擦过的那一块，从里面结上了。'
+    ]},
+    A:{ k:'门前信箱', t:'第一封投出去了', lines:[
+      '门缝里没有光。',
+      '信箱是满的 —— 昨天那封还在里面，封口朝外。',
+      '你把新的压在它上面。铁皮合上时，里面有人把手收了回去。'
+    ]},
+    B:{ k:'林子边', t:'第二封投出去了', lines:[
+      '船屋的屋顶塌了半边。雪直接落在船台上。',
+      '船不在。台子上只有两道拖痕，很新，一直拖进林子里。',
+      '你把信塞进信箱。里面已经有十几封了，全是同一个笔迹 —— 你的。',
+      '每一封的收件人栏都写着「湖边那条船」。每一封都没拆。'
+    ]},
+    C:{ k:'坡下 · 钉着铜牌的那只', t:'第三封投出去了', lines:[
+      '你在门口站了很久。',
+      '里面有人走了一步，然后停住 —— 停在你抬脚的那一拍上。',
+      '你把信放进信箱。退出来的时候，雪地上多了一串脚印，尺码比你大一码。'
+    ]},
+  },
+  3:{
+    take:{ k:'极夜邮局 · 交接', t:'三封信', lines:[
+      '三封信，没有寄件人。',
+      '纸的手感和你昨天摸过的一样。',
+      '封口的蜡上有一个指印。比你的手指小一圈 —— 和第一夜那封一样。'
+    ]},
+    A:{ k:'门前信箱', t:'第一封投出去了', lines:[
+      '门前信箱。昨天投过一封，今天这一封的地址还是这里。',
+      '信塞进去，铁皮还没有凉。'
+    ]},
+    B:{ k:'林子边', t:'第二封投出去了', lines:[
+      '船屋的灯亮着。窗上的纸变成了两张。',
+      '你低头看了一眼手里的信。字迹和上一封一样。'
+    ]},
+    C:{ k:'坡下 · 钉着铜牌的那只', t:'第三封投出去了', lines:[
+      '铜牌还在。',
+      '你认出了自己的字。不是像，是一样。',
+      '你把这封也投了进去。三封，一封都没少。'
+    ]},
+  },
+  4:{
+    take:{ k:'极夜邮局 · 交接', t:'三封信', lines:[
+      '三封信。三个地址，写的是同一个门牌。',
+      '那是你住的这栋。',
+      '第三封的收件人栏，写的是「丽芙」。',
+      '你把它们并排放好。第四封的位置是空的 —— 但有一个压痕。'
+    ]},
+    /* 第 4 夜：三封全投门前那一只，所以 A 有三张卡 */
+    A:[
+      { k:'门前信箱', t:'第一封投出去了', lines:[
+        '门前信箱。三个地址，一个门牌。',
+        '这是你自己家的信箱。里面已经有信了。',
+        '你把新的塞进去，两封并排立着，像两个人站在门里。'
+      ]},
+      { k:'门前信箱', t:'第二封投出去了', lines:[
+        '铁皮响了两声。',
+        '屋里没有开灯。灯在桌上，还亮着。',
+        '你伸手去摸信箱的底，摸到一层纸。全是信，都没拆。'
+      ]},
+      { k:'门前信箱', t:'第三封投出去了', lines:[
+        '第三封落下去的时候，里面有东西接住了它 —— 不是纸的声音。',
+        '信箱里传出一句很轻的话：「你自己收。」',
+        '推门进去。桌上多了一本日记，日记旁边坐着一个人，穿着你的冲锋衣。'
+      ]},
+    ],
+    B:{ k:'林子边', t:'这一封不是给它的', lines:['三个地址是同一个门牌。'] },
+    C:{ k:'坡下 · 钉着铜牌的那只', t:'这一封不是给它的', lines:['三个地址是同一个门牌。'] },
+  },
+};
+function nightOf(){ return NIGHT[CH.day] || NIGHT[1]; }
 
 /* 旧版那些并列小机关、进屋换家具、靴子清点 —— 全部让位给送信主线 */
 TUNE.matchSwaps = 2;
@@ -6216,6 +6380,10 @@ chStyle.textContent = `
 /* 点中了，亮一下 */
 .wt.flash{background:#ffe0b8;animation:none;opacity:1;
   box-shadow:0 0 0 2px rgba(255,224,184,.80),0 0 16px rgba(255,190,120,.65)}
+/* 准星正对着的那一个（v16）：再大一圈、再亮一格。
+   「我看到的就是我要按的」—— 准星变橙 = 这一下 E 一定落在它身上。 */
+.wt.aim{width:12px;height:12px;background:#ffe6c0;opacity:1;animation:none;
+  box-shadow:0 0 0 2px rgba(255,214,170,.55),0 0 18px rgba(255,180,110,.60)}
 /* 旧的文字子元素一律不显示（保留节点只为兼容老调试钩子） */
 .wt .k,.wt .nm,.wt .dt,.wt .ln{display:none}
 /* 邮袋：比任务点大一圈 + 一圈慢慢扩散的光环（v15：别让人漏掉它） */
@@ -6335,7 +6503,7 @@ const CH_GUIDE = {
   '4':   '林子边那只，铜牌朝里。',
   '5':   '坡下两只。铜牌在侧面。',
   '6':   '还剩最后一封。',
-  '7':   '门还开着。',
+  '7':   '回屋里，床上躺一会儿。',
 };
 let chGuideTxt = null;
 /* 引导句按「天 + 位置 + 进度」挑，一句只说一件事。
@@ -6345,8 +6513,14 @@ function chGuidePick(){
   const near = (x, z, r)=> Math.hypot(P.x - x, P.z - z) < r;
   const inCabin = chInsideCabin(P.x, P.z);
   if (!inCabin) return CH_GUIDE[String(CH.step)] || '';
-  if (CH.day === 4) return '';
-  if (CH.day === 2) return CH.day2Read ? '信看完了。回床上。' : '桌上那封信。拆开看。';
+  /* 第 4 夜：三封投完 → 桌上那封；拆完 → 不再指路 */
+  if (CH.day === 4){
+    if (CH.finale && !CH.lastRead) return '桌上那封，收信人是你。拆开。';
+    if (CH.lastRead || CH.ending) return '';
+    if (CH.step >= 2 && CH.step < 7) return '门前那一只。三个地址，同一个门牌。';
+  }
+  /* 第 2 夜桌上多一封（拆开 → 窗外开始响） */
+  if (CH.day === 2 && !CH.day2Read && CH.step >= 2) return '桌上多了一封。拆开看。';
   if (CH.delivered < 3 && near(IX(-3.7), IZ(-1.2), 5)) return '床在那边。信没投完，躺不下。';
   if (CH.delivered >= 3 && !CH.slept) return '三封都投出去了。回床上躺一会儿。';
   if (CH.step === 1 && near(IX(1.9), IZ(0.3), 4)) return '桌上那封信。先看看桌上。';
@@ -6390,7 +6564,11 @@ const TIP_OVERLAP   = 110;  // 两个浮标挤在一起时，远的降成小圆�
 const INTERACT = [];
 
 function chRegister(it){
-  it.radius = it.radius || IR_RADIUS;
+  /* rawR：注册时「显式」写的半径，用来约束射线能不能从远处选中它
+     （radius 会被补成默认 IR_RADIUS，所以必须单独记一份） */
+  const rawR = (typeof it.radius === 'number') ? it.radius : null;
+  it.rayR  = rawR;
+  it.radius = rawR || IR_RADIUS;
   it.tier   = it.tier || 'quest';
   it.where  = it.where || 'out';                // in 屋内 / out 屋外 / door 门口（分侧显示）
   it.prio   = it.tier === 'quest' ? 2 : 1;      // 任务物件永远压过环境物件
@@ -6572,8 +6750,19 @@ document.addEventListener('pointerlockchange', ()=>{
   }
 });
 
-/* ③ 回车 = 查看（E 按不动时的备用键） */
-window.addEventListener('keydown', e=>{
+/* ④ 光标：只要屏幕上有「要点的东西」，系统光标就放出来。
+   游戏本体是 cursor:none（准星代替光标），弹面板时不放光标，
+   玩家会以为「选项点不动」—— 这是「要点选项时自动调用鼠标」的落地方式。 */
+function chCursorSync(){
+  let need = !!(panelOpen || choiceOpen || CH.pageOpen || CH.standoff || ended);
+  try {
+    if (typeof lockOpen !== 'undefined' && lockOpen) need = true;
+    if (typeof frostEl !== 'undefined' && frostEl && !frostEl.classList.contains('hidden')) need = true;
+  } catch(e){}
+  if (document.body.classList.contains('uiopen') !== need) document.body.classList.toggle('uiopen', need);
+}
+
+/* ③ 回车 = 查看（E 按不动时的备用键） */window.addEventListener('keydown', e=>{
   if (!CH.on || ended) return;
   if (e.code === 'Enter' || e.code === 'NumpadEnter'){
     e.preventDefault();
@@ -6701,6 +6890,17 @@ window.addEventListener('keydown', e=>{
   if (e.code === 'Space' && CH.pageOpen){
     e.preventDefault(); e.stopImmediatePropagation(); chAdvance(); return;
   }
+  /* 有选项的卡片：1 / 2 / 3 也能选（鼠标看不见时的兜底） */
+  if (CH.pageOpen){
+    const p = CH.pages[0];
+    if (p && p.choices){
+      const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if (m){
+        const i = parseInt(m[1], 10) - 1;
+        if (i < p.choices.length){ e.preventDefault(); e.stopImmediatePropagation(); chPick(i); return; }
+      }
+    }
+  }
   if (e.code === 'Escape'){ e.stopImmediatePropagation(); }
 }, true);
 
@@ -6776,16 +6976,23 @@ chRegister({
   id:'letters', name:'桌上的信', tier:'quest', where:'in',
   pos: ()=> ({ x: IX(1.9), y: CABIN_Y + 1.15, z: IZ(0.3) }),
   enabled: ()=> true,
-  prompt: ()=> CH.day === 2 ? '拆开桌上那封信' : (CH.step === 1 ? '拿起桌上的信' : '读那封信'),
+  prompt: ()=>{
+    if (CH.finale && !CH.lastRead) return '拆开写着自己名字的那封';
+    if (CH.step === 1) return '拿起桌上的信';
+    if (CH.day === 2 && !CH.day2Read) return '拆开桌上那封信';
+    return '读那封信';
+  },
   run: ()=>{
-    /* 第 2 天：桌上换了一封，收信人是「第 2 天的你」 */
-    if (CH.day === 2){
+    /* 第 4 夜 · 最后一封：拆开 → 两个结局 */
+    if (CH.finale && !CH.lastRead) return chLastLetter();
+    if (CH.step === 1) return chTakeLetters();
+    /* 第 2 天：桌上多了一封，收信人是「第 2 天的你」 */
+    if (CH.day === 2 && !CH.day2Read){
       CH.day2Read = true;
       openPanelEl('— 桌上 · 第二封 —', '收信人：第 2 天的你', buildLetter2, '合上');
       if (!CH.knockDone) setTimeout(()=> chWindowKnock(), 900);
       return '拆开了第二封';
     }
-    if (CH.step === 1) return chTakeLetters();
     MK.letter.n++;
     openPanelEl('— 桌上 · 一封信 —', '信', buildLetter, '每读一次，它就多一行');
     /* 读到第 5 行「别看窗外。」→ 窗外开始响 */
@@ -6795,11 +7002,16 @@ chRegister({
 });
 chRegister({
   id:'double', name:'另一个你', tier:'quest', radius:5.2, where:'out',
-  pos: ()=> CH.double ? { x:CH.double.x, y:CH.double.y + 2.35, z:CH.double.z } : null,
+  pos: ()=> CH.double ? { x:CH.double.x, y:CH.double.y + 1.15, z:CH.double.z } : null,
+  obj: ()=> CH.double ? CH.double.root : null,
   gone: ()=> !CH.double,
-  enabled: ()=> CH.step === 3 ? true : { ok:false, done:true, why:'它已经走了' },
-  prompt: '走近它',
+  enabled: ()=> (CH.step === 3 || (CH.day === 4 && CH.terror >= 7))
+    ? true : { ok:false, done:true, why:'它已经走了' },
+  prompt: CH.day === 4 ? '看着它' : '跟它说话',
   run: ()=>{
+    if (document.pointerLockElement) document.exitPointerLock();
+    /* 第 4 夜那三个不回答，只重复你的动作 —— 不给选项，别打断节奏 */
+    if (CH.day === 4) return '它不回答。你抬手，它也抬手。你把灯放下，它也放下。';
     if (CH.askedProof) return '它还在等你的回答';
     CH.askedProof = true; chAskProof(); return '它抬起头';
   },
@@ -6811,6 +7023,13 @@ function chBoxEntry(id, name, okStep){
     obj: ()=>{ const b = CH.boxes[id]; return b ? b.g : null; },
     glow: (CH.boxes[id] ? CH.boxes[id].glow : null),
     enabled: ()=>{
+      /* 第 4 夜：门前这只从拿到信开始一直能收到三封投完为止 */
+      if (CH.day === 4){
+        if (id !== 'A') return { ok:false, why:'这一封不是给它的' };
+        if (CH.step >= 2 && CH.step < 7) return true;
+        if (CH.step >= 7) return { ok:false, done:true, why:'投完了' };
+        return { ok:false, why:'还没拿到信' };
+      }
       if (CH.step === okStep) return true;
       if (CH.step > okStep) return { ok:false, done:true, why:'这一封已经投了' };
       if (CH.step < 2) return { ok:false, why:'还没拿到信' };
@@ -6829,6 +7048,7 @@ chRegister({
   obj: ()=> CH.fakeBox ? CH.fakeBox.g : null,
   glow: (CH.fakeBox ? CH.fakeBox.glow : null),
   enabled: ()=>{
+    if (CH.day === 4) return { ok:false, why:'这一封不是给它的' };
     if (CH.step === 5) return true;
     if (CH.step > 5) return { ok:false, done:true, why:'已经投完了' };
     if (CH.step < 2) return { ok:false, why:'还没拿到信' };
@@ -6858,8 +7078,16 @@ function chAmb(id, name, posFn, line, where, objFn){
     run: ()=> line,
   });
 }
-chAmb('shelf',    '书架',      ()=>({ x:IX(CAB.w/2-0.35), y:CABIN_Y+1.7, z:IZ(-1.6) }),
-      '书脊上全是同一本书。每一本的第一页都翻烂了。', 'in');
+/* v17：书架 / 收音机 / 壁炉 / 火柴盒 从「一句话薄壳」接回厚交互。
+   以前 chAmb 只回一句，把 inspectShelf / playRadio / openChoice('fireplace') 全挡住了。 */
+chRegister({
+  id:'shelf', name:'书架', tier:'ambient', where:'in', radius:2.4,
+  pos: ()=>({ x:IX(CAB.w/2-0.35), y:CABIN_Y+1.7, z:IZ(-1.6) }),
+  obj: ()=> props.shelf || null,
+  enabled: ()=> true,
+  prompt: '看看书脊',
+  run: ()=>{ inspectShelf(); return '书架'; },
+});
 /* 窗：拍窗事件进行中按 E 看窗 → 直接结算（不用等 0.5 秒的对视） */
 chRegister({
   id:'window', name:'窗', tier:'ambient', where:'in',
@@ -6871,10 +7099,48 @@ chRegister({
     return '玻璃上结着霜。擦开一块，外面什么也没有。';
   },
 });
-chAmb('radio',    '收音机',    ()=>({ x:IX(2.2), y:CABIN_Y+1.8, z:IZ(-CAB.d/2+0.4) }),
-      '指针卡在两格之间，正好压在「2」上。你拧了一下，它自己转回来。', 'in');
-chAmb('fireplace','壁炉',      ()=>({ x:IX(-1.4), y:CABIN_Y+1.0, z:IZ(-CAB.d/2+0.6) }),
-      '柴是湿的。划不着 —— 至少今晚划不着。', 'in', ()=> props.fireplace);
+chRegister({
+  id:'radio', name:'收音机', tier:'ambient', where:'in', radius:2.4,
+  pos: ()=>({ x:IX(2.2), y:CABIN_Y+1.8, z:IZ(-CAB.d/2+0.4) }),
+  obj: ()=> props.radio || null,
+  enabled: ()=> props.radio.visible ? true : { ok:false, why:'柜子上空着' },
+  prompt: '拧一下旋钮',
+  run: ()=>{ playRadio(); return '收音机'; },
+});
+chRegister({
+  id:'fireplace', name:'壁炉', tier:'ambient', where:'in', radius:2.2,
+  pos: ()=>({ x:IX(-1.4), y:CABIN_Y+1.0, z:IZ(-CAB.d/2+0.6) }),
+  obj: ()=> props.fireplace || null,
+  enabled: ()=> true,
+  prompt: '拨弄壁炉',
+  run: ()=>{ openChoice('fireplace'); return '壁炉'; },
+});
+/* v17 新增：杯子（以前注册表里根本没有，准星打不到 → 「这儿没有能看的」） */
+chRegister({
+  id:'cup', name:'搪瓷杯', tier:'ambient', where:'in', radius:1.1,
+  pos: ()=>{ const p = props.cup.position;
+             return { x:IX(p.x), y:CABIN_Y+p.y+0.10, z:IZ(p.z) }; },
+  obj: ()=> props.cup || null,
+  enabled: ()=> true,
+  prompt: '看看杯子',
+  run: ()=>{ inspectCup(); return '杯子'; },
+});
+/* v17 新增：椅子（两把，主椅 props.chairs[0]） */
+chRegister({
+  id:'chair', name:'椅子', tier:'ambient', where:'in', radius:1.2,
+  pos: ()=>{ const p = props.chairs[0].position;
+             return { x:IX(p.x), y:CABIN_Y+0.55, z:IZ(p.z) }; },
+  obj: ()=> props.chairs[0] || null,
+  enabled: ()=> true,
+  prompt: '看看椅子',
+  run: ()=>{
+    if (CH.day === 2) return '椅子被拉开了半臂。你没有拉开它。';
+    if (CH.day === 4) return CH.chairMoved
+      ? '两把椅子都正对着门。椅面上的灰，被坐过。'
+      : '一把旧木椅。榫头松了，坐上去会响。';
+    return '一把旧木椅。榫头松了，坐上去会响。';
+  },
+});
 
 /* 柴堆：本体在 (-0.1, -3.1)，以前只有壁炉有浮标、柴堆没有 obj()，
    准星射线打空 → 退到最近 3m → 被桌上的信抢走，手感就是「点柴 E 没反应」。 */
@@ -6916,9 +7182,15 @@ chRegister({
     return '对两张表';
   },
 });
-chAmb('matches',  '火柴盒',    ()=>{ const p = props.matchbox ? props.matchbox.position : { x:1.9, y:0.9, z:0.3 };
-                                     return { x:IX(p.x), y:CABIN_Y+p.y+0.12, z:IZ(p.z) }; },
-      '三根。你数过三遍，还是三根。', 'in');
+chRegister({
+  id:'matches', name:'火柴盒', tier:'ambient', where:'in', radius:1.6,
+  pos: ()=>{ const p = props.matchbox ? props.matchbox.position : { x:1.9, y:0.9, z:0.3 };
+             return { x:IX(p.x), y:CABIN_Y+p.y+0.12, z:IZ(p.z) }; },
+  obj: ()=> props.matchbox || null,
+  enabled: ()=> true,
+  prompt: '打开火柴盒',
+  run: ()=>{ openChoice('matchbox'); return '火柴盒'; },
+});
 chAmb('snowdrift','雪堆',      ()=>({ x:CABIN_X+8.5, y:GY(CABIN_X+8.5, CABIN_Z+7)+0.5, z:CABIN_Z+7 }),
       '雪下面埋着什么，硬的。你没有挖。');
 chAmb('ice',      '冰面',      ()=>({ x:-38, y:GY(-38,24)+0.35, z:24 }),
@@ -6928,6 +7200,30 @@ chAmb('stump',    '树桩',      ()=>({ x:-29.5, y:GY(-29.5,33)+0.5, z:33 }),
 chAmb('prints',   '脚印',      ()=>{ const p = (PAW_PRINTS && PAW_PRINTS.length) ? PAW_PRINTS[0] : null;
                                      return p ? { x:p.x, y:GY(p.x,p.z)+0.25, z:p.z } : null; },
       '一串脚印。尺码比你大一码，踩得很深。');
+
+/* ---- v17：雪地里那几根火柴（以前只有旧系统认，注册表里没有 → 捡不起来） ---- */
+function chPickMatchUp(m){
+  if (!m || m.taken) return '这根已经在你口袋了';
+  m.taken = true;
+  if (m.mesh) m.mesh.visible = false;
+  if (m.halo) m.halo.visible = false;
+  game.hand.push({ id: game.nextMatchId++, version: currentRoom });
+  updateHUD();
+  showCaption('一根火柴。干的。你把它收进内袋。', 2800);
+  try { sound.playClick(); } catch(e){}
+  return '捡起来了';
+}
+matchPickables.forEach((m, i)=>{
+  chRegister({
+    id:'matchpick'+i, name:'雪里的一根火柴', tier:'ambient', where:'out', radius:2.2,
+    pos: ()=>({ x:m.mesh.position.x, y:m.baseY + 0.18, z:m.mesh.position.z }),
+    obj: ()=> m.mesh,
+    gone: ()=> m.taken,
+    enabled: ()=> m.taken ? { ok:false, done:true, why:'这根已经在你口袋了' } : true,
+    prompt: '捡起来',
+    run: ()=> chPickMatchUp(m),
+  });
+});
 
 /* ============================================================
    机关 · 一 / 二 / 三
@@ -7088,6 +7384,25 @@ const LETTER_LINES = [
   '不要把窗擦干净。',
 ];
 function buildLetter(host){
+  /* 第 4 夜：同一张纸，字迹变了 —— 五行全给，不做「每读一次多一行」 */
+  if (CH.day === 4){
+    const paper4 = mkel('div', 'paper');
+    paper4.appendChild(mkel('div', 'p-to', '收信人：<b>你</b>'));
+    paper4.appendChild(mkel('div', 'p-stamp', '<div>SKARVIK</div><div>第 4 天</div>'));
+    const body4 = mkel('div', 'p-body');
+    [
+      '我到了。',
+      '灯还能亮。柴是潮的，凑合能烧。',
+      '今天没有风。也没有别的声音 —— 除了你身后的那个。',
+      '如果你读到这里，说明你也到了。',
+      '不要回头。',
+    ].forEach((t, i)=> body4.appendChild(mkel('div', i === 4 ? 'fresh' : '', t)));
+    paper4.appendChild(body4);
+    paper4.appendChild(mkel('div', 'p-sign', '—— 丽芙'));
+    host.appendChild(paper4);
+    mkhint(host, '这一封没有寄出去。信封上也没有地址。', 'bad');
+    return;
+  }
   const n = MK.letter.n;
   /* 每读一次多一行；第一次就多给一行，别让人为了看见「别看窗外」读五遍 */
   const shown = Math.min(Math.max(n, 1) + 1, LETTER_LINES.length);
@@ -7136,12 +7451,12 @@ function buildLetter2(host){
   paper.appendChild(mkel('div', 'p-stamp', '<div>SKARVIK</div><div>第 2 天</div>'));
   const body = mkel('div', 'p-body');
   [
-    '你昨天投了三封。今天不用投。',
-    '窗上有四块手印。你只有两只手。',
+    '你昨天投了三封。今天还是三封。',
     '<span class="wrong">别看窗外。</span>',
-  ].forEach((t, i)=> body.appendChild(mkel('div', i === 2 ? 'fresh' : '', t)));
+    '投完再睡。三封都投出去，床才认你。',
+  ].forEach((t, i)=> body.appendChild(mkel('div', i === 1 ? 'fresh' : '', t)));
   paper.appendChild(body);
-  paper.appendChild(mkel('div', 'p-sign', '—— 你'));
+  paper.appendChild(mkel('div', 'p-sign', '—— 你（今天的字比昨天抖）'));
   host.appendChild(paper);
   mkhint(host, '字是你的。墨还没干透。', 'bad');
 }
@@ -7153,6 +7468,7 @@ function buildLetter2(host){
 function chWindowKnock(){
   if (CH.knockDone) return;
   CH.knockDone = true;
+  CH.terror++;
   CH.knockWatching = true;
   CH.knockLookAt = 0;
   CH.knockT.forEach(clearTimeout); CH.knockT.length = 0;
@@ -7201,7 +7517,8 @@ function chKnockTick(){
 }
 
 /* ============================================================
-   换天：第 1 天 → 第 2 天 → 第 4 天（第 3 天是撕掉的那一页）
+   换夜：第 1 天 → 第 2 天 → 第 3 天 → 第 4 天
+   四个晚上都送三封；只有睡觉能换夜（床上没投完躺不下）。
    ============================================================ */
 function chDayBreak(day){
   if (CH.day === day || CH.dayBreak) return;
@@ -7215,6 +7532,13 @@ function chDayBreak(day){
   setTimeout(()=>{
     CH.day = day;
     CH.dayBreak = false;
+    /* 新的一夜：投递归零、台阶回到拿信那一步 */
+    CH.delivered = 0;
+    CH.step = 1;
+    CH.slept = false;
+    CH.double = null;
+    try { clearDoubles(); } catch(e){}
+    game.outsideCount = 0;
     /* 醒来在床边 */
     try { teleportFast(IX(-2.3), IZ(-1.2), Math.PI * 0.5, 0); } catch(e){}
     if (day === 2){
@@ -7222,27 +7546,37 @@ function chDayBreak(day){
         '你记得自己躺下过。<br>你不记得是什么时候躺下的。',
         { text:'第 2 天。你记得自己躺下过。你不记得是什么时候躺下的。',
           opts:{ rate:0.92, pitch:1.0 } }, 9000);
+    } else if (day === 3){
+      showMonologue('— 第 3 天 · 05:40 · 灯亮着 —',
+        '你睡了一整夜。<br>火柴还是三根。',
+        { text:'第 3 天。你睡了一整夜。火柴还是三根。',
+          opts:{ rate:0.92, pitch:1.0 } }, 9000);
     } else if (day === 4){
-      CH.done = true;
-      CH.step = 9;                       // 终局：投递簿没有下一个目标了
-      chHudEl.classList.remove('on');
-      chBeam && (chBeam.visible = false);
-      chPush([{ k:'— 第 4 天 —', t:'日记本少了一页', lines:[
-        '日记本中间少了第 3 天那页，撕口很整齐。',
-        '桌上又有一封信，收信人写的是你。',
-        '窗上的霜，是从里面结的。'
+      chPush([{ k:'— 第 4 天 · 05:40 —', t:'桌上三封信', lines:[
+        '三个地址，写的是同一个门牌。',
+        '那是你住的这栋。'
       ]}], null);
+      /* 事件①：数第三遍的时候，多了一封 */
+      setTimeout(()=> chAfterCard(()=>{
+        if (CH.day !== 4) return;
+        showCaption('桌上的信是三封。你数了两遍。第三遍的时候，多了一封。', 5200);
+        CH.terror++;
+      }), 900);
     }
     chHudUpdate();
   }, 1500);
 }
 
-/* 上床：三分支。没投完先回原因；第 1 天 → 第 2 天；第 2 天 → 第 4 天 */
+/* 上床：没投完先回原因；1→2 / 2→3 / 3→4；第 4 夜不用再躺 */
 function chSleep(){
   if (CH.delivered < 3) return `还有 ${3 - CH.delivered} 封信没投出去`;
-  if (CH.day === 1){ CH.slept = true; chDayBreak(2); return ''; }
-  if (CH.day === 2){ CH.slept = true; chDayBreak(4); return ''; }
-  return '你不想再躺下了。';
+  if (CH.day === 4){
+    if (CH.finale && !CH.lastRead) return '还差最后一封。桌上那封，收信人是你。';
+    return '不用再躺了。';
+  }
+  CH.slept = true;
+  chDayBreak(CH.day + 1);
+  return '';
 }
 
 /* ---------------- 机关三 · 值班表 ----------------
@@ -7387,7 +7721,7 @@ function chHudUpdate(){
   if (!t){ if (chHudEl.classList.contains('on')) chHudEl.classList.remove('on'); return; }
   if (!chHudEl.classList.contains('on')) chHudEl.classList.add('on');
 
-  const m = CH.day >= 2 ? `第 ${CH.day} 天` : `第 ${Math.min(CH.delivered+1,3)} 封`;
+  const m = `第 ${CH.day} 天 · 第 ${Math.min(CH.delivered+1, 3)} 封`;
   if (m !== chHudTxt){ chhMain.textContent = m; chHudTxt = m; }
   if (t.name !== chHudDestTxt){ chhDest.textContent = t.name; chHudDestTxt = t.name; }
 
@@ -7402,14 +7736,15 @@ function chHudUpdate(){
   const tr = `rotate(${(-rel * 180/Math.PI).toFixed(0)}deg)`;
   if (tr !== chHudArrow){ chhArrow.style.transform = tr; chHudArrow = tr; }
 
-  const ct = CH.day >= 2 ? '三封都投完了' : `已投 ${CH.delivered} / 3`;
+  const ct = `已投 ${CH.delivered} / 3`;
   if (ct !== chHudCntTxt){ chhCnt.textContent = ct; chHudCntTxt = ct; }
 }
 /* 当前目标信箱的细光柱：远远就能看见「那一只是要投的」。
    只有 0.10 的不透明度 —— 再亮就把夜景毁了。 */
 let chBeam = null, chBeamFor = '';
 function chBeamUpdate(){
-  const map = { 2:'A', 4:'B', 5:'C' };
+  /* 第 4 夜三封都投门前那一只，光柱一直挂在 A 上 */
+  const map = (CH.day === 4) ? { 2:'A', 4:'A', 5:'A' } : { 2:'A', 4:'B', 5:'C' };
   const id = map[CH.step] || '';
   if (!chBeam){
     const geo = new THREE.CylinderGeometry(0.55, 0.85, 12, 10, 1, true);
@@ -7429,14 +7764,18 @@ function chBeamUpdate(){
 }
 
 function chTarget(){
-  /* 第 2 天：目标换回桌上那封信 */
-  if (CH.day === 2) return { name:'桌上 · 那封信', x: CABIN_X + 1.9, z: CABIN_Z + 0.3 };
+  /* 第 4 夜三封投完：目标换成桌上那封「收信人：你」 */
+  if (CH.finale && !CH.lastRead) return { name:'桌上 · 最后一封', x: CABIN_X + 1.9, z: CABIN_Z + 0.3 };
   if (CH.step === 1) return { name:'桌上的信', x: CABIN_X + 1.9, z: CABIN_Z + 0.3 };
+  /* 第 4 夜三封全投门前那一只 */
+  if (CH.day === 4 && (CH.step === 2 || CH.step === 4 || CH.step === 5))
+    return { name:'你自己 → 门前信箱', x: CH.boxes.A.x, z: CH.boxes.A.z };
   if (CH.step === 2) return { name:'灯塔看守人 → 门前信箱', x: CH.boxes.A.x, z: CH.boxes.A.z };
   if (CH.step === 3) return CH.double ? { name:'那个抱着信的人', x: CH.double.x, z: CH.double.z }
                                       : { name:'门前信箱', x: CH.boxes.A.x, z: CH.boxes.A.z };
   if (CH.step === 4) return { name:'湖边那条船 → 林子边', x: CH.boxes.B.x, z: CH.boxes.B.z };
   if (CH.step === 5) return { name:'你自己 → 坡下', x: CH.boxes.C.x, z: CH.boxes.C.z };
+  if (CH.step === 7) return { name:'床 · 躺一会儿', x: IX(-3.7), z: IZ(-1.2) };
   return null;
 }
 
@@ -7461,47 +7800,124 @@ function chPrompt(){
   return chEnabledOf(n.it).why || '现在用不上';
 }
 
-/* 拿起桌上的信 */
+/* 拿起桌上的信 —— 四个晚上共用，只有文案按夜换 */
 function chTakeLetters(){
   if (CH.step !== 1) return '信已经在你手里';
   CH.step = 1.5;
-  chPush([
-    { k:'极夜邮局 · 交接', t:'三封信', lines:[
-      '麻绳一解，信就散了。纸是凉的，边角被反复捏过。',
-      '封口的蜡按过一个指印，比你的手指小一圈。',
-      '第一封写：<em>灯塔看守人 收</em>。',
-      '第二封写：<em>湖边那条船 收</em>。',
-      '第三封没有收件人，只在封口画了一扇门。',
-      '你把三封并排放好。第四封的位置是空的。'
-    ]},
-  ], ()=>{ CH.step = 2; chHudUpdate(); });
+  chPush([ nightOf().take ], ()=>{
+    CH.step = 2; chHudUpdate();
+    /* 一闪而过 · 第 2 夜①：出门路上，正前方 14m 背对你 */
+    if (CH.day === 2){
+      setTimeout(()=> chAfterCard(()=>{
+        if (CH.day !== 2) return;
+        chFlashDouble({ dist: 14, life: 1200, faceAway: true });
+        showCaption('前面路上站着一个人。穿着你的衣服。', 2600);
+      }), 800);
+    }
+    /* 一闪而过 · 第 4 夜①：门廊台阶上，3m，背对着你，在看门里 */
+    if (CH.day === 4){
+      setTimeout(()=> chAfterCard(()=>{
+        if (CH.day !== 4) return;
+        chFlashDouble({ dist: 3, life: 1500, faceAway: true });
+        showCaption('台阶上站着一个人。它在看门里。', 2800);
+      }), 800);
+    }
+  });
   return '麻绳一解，信散开了';
 }
 
-/* 投信 —— 每一只信箱都必须给一句话，没有静默 return */
+/* 投信 —— 每一只信箱都必须给一句话，没有静默 return。
+   v16：三只信箱、判定顺序、铜牌规则全部照旧；只是「投完说什么」按夜查表，
+   另外第 4 夜三封都投门前那一只（三个地址是同一个门牌）。 */
 function chDeliver(id){
+  const N = nightOf();
   if (id === 'A'){
-    if (CH.step !== 2) return '这一封不是给它的';
-    CH.delivered = 1; CH.step = 2.5;
-    chPush([
-      { k:'门前信箱', t:'第一封投出去了', lines:[
-        '铁皮响了一声，很轻。',
-        '雪停了一下，像有人按住了一秒。',
-        '你回过头，极光正好红了一瞬 —— 像有人把炉子里的炭翻了一下。'
-      ]},
-    ], chRedMoment);
+    const okA = (CH.day === 4) ? (CH.step === 2 || CH.step === 4 || CH.step === 5)
+                               : (CH.step === 2);
+    if (!okA) return '这一封不是给它的';
+    const nth = (CH.day === 4) ? (CH.step === 2 ? 1 : (CH.step === 4 ? 2 : 3)) : 1;
+    CH.delivered = nth;
+    CH.step = (CH.day === 4) ? (nth === 1 ? 4 : (nth === 2 ? 5 : 7)) : 2.5;
+    chPush([ Array.isArray(N.A) ? N.A[nth - 1] : N.A ], ()=>{
+      if (CH.day === 4){
+        if (nth === 3){
+          /* 事件⑥守则失效 → 事件⑦三个分身进屋 → 才进 finale */
+          chPush([{ k:'— 极光 · 红 —', t:'灯举起来，光没有退', lines:[
+            '你把灯举起来。极光往后退了半寸 —— 又压了回来。',
+            '灯口的光被按灭，像有人用手掌盖住。',
+            '<em>守则第二条不成立。今晚，屋里不止你一个人。</em>'
+          ]}], ()=>{
+            CH.terror++;
+            chTripleDouble();
+            setTimeout(()=> chFinale(), 2800);
+          });
+        } else if (nth === 1){
+          setTimeout(()=> chKnockInside(), 900);
+          chHudUpdate();
+          /* 一闪而过 · 第 4 夜②：投完第一封，转身它就在身后 2m */
+          setTimeout(()=> chAfterCard(()=>{
+            if (CH.day !== 4) return;
+            try { sound.cutAll(700); } catch(e){}
+            chFlashDouble({ dist: 2, life: 1200, ang: Math.PI });
+            showCaption('你转身，它就在你身后。', 2400);
+          }), 5200);
+        } else {
+          chHudUpdate();
+          /* 事件③④⑤：喊名 → 灯灭杯子换位 → 椅子正对门，全部等卡片关掉再走 */
+          setTimeout(()=> chCallName('near'), 1800);
+          /* 一闪而过 · 第 4 夜③：投完第二封回屋，窗后站着一个人（屋内） */
+          setTimeout(()=> chAfterCard(()=>{
+            if (CH.day !== 4) return;
+            chFlashDouble({ at:{ x:IX(0), z:IZ(-CAB.d/2+1.1) }, indoor:true, life: 2000 });
+            showCaption('窗后面站着一个人。它在屋里。', 3000);
+          }), 9800);
+          setTimeout(()=> chAfterCard(()=>{
+            sound.cutAll(1200); silenceFlash(1100);
+            setTimeout(()=>{
+              if (CH.day !== 4) return;
+              showCaption('灯再亮起来的时候，桌上的杯子换了位置。', 4200);
+              CH.terror++;
+            }, 1100);
+          }), 3600);
+          setTimeout(()=> chAfterCard(()=>{
+            if (CH.day !== 4) return;
+            showCaption('两把椅子都正对着门。你走的时候，它们是歪的。', 4600);
+            CH.chairMoved = true;
+            CH.terror++;
+          }), 7600);
+        }
+        return;
+      }
+      if (CH.day === 2){
+        if (!CH.knockDone) setTimeout(()=> chWindowKnock(), 1200);
+        CH.terror++;                         // 事件②：极光红 + 对峙
+        chRedMoment();                       // 另一个你只在第 2 夜出现
+        return;
+      }
+      CH.step = 4; CH.forkArmed = true; chHudUpdate();
+    });
     return '';
   }
   if (id === 'B'){
+    if (CH.day === 4) return '这一封不是给它的';
     if (CH.step !== 4) return '这一封不是给它的';
     CH.delivered = 2; CH.step = 6;
-    chPush([
-      { k:'林子边', t:'第二封投出去了', lines:[
-        '这次极光没有变。',
-        '林子边缘有个东西在移动，很慢，一直没出过那排树。',
-        '投递簿自己翻到最后一页。收件人那栏写的是三个字：<em>你自己</em>。'
-      ]},
-    ], ()=>{ CH.step = 5; chHudUpdate(); chPush([
+    chPush([ N.B ], ()=>{ CH.step = 5; chHudUpdate();
+      if (CH.day === 2){
+        setTimeout(()=> chCallName('far'), 2000);          // 事件③：风雪里喊乳名
+        setTimeout(()=> chAfterCard(()=>{
+          if (CH.day !== 2) return;
+          showCaption('椅子被拉开了半臂。你没有拉开它。', 4200);
+          CH.terror++;                                     // 事件④
+        }), 4400);
+        /* 一闪而过 · 第 2 夜③：去坡下，树线之间 18m */
+        setTimeout(()=> chAfterCard(()=>{
+          if (CH.day !== 2) return;
+          chFlashDouble({ dist: 18, life: 700, faceAway: true });
+          showCaption('树线那儿有个人。你一眨眼，它在更近的地方。', 3200);
+        }), 9200);
+      }
+      chPush([
       { k:'投递簿 · 第三封', t:'坡下', lines:[
         '坡底下有两个信箱。你确定不了哪个是邮局的。',
         '守则第一条写着：<em>邮局的信箱，侧面钉一块铜牌。</em>',
@@ -7511,31 +7927,207 @@ function chDeliver(id){
     return '';
   }
   if (id === 'C'){
+    if (CH.day === 4) return '这一封不是给它的';
     if (CH.step !== 5) return '这一封不是给它的';
     CH.delivered = 3; CH.step = 7;
-    chPush([
-      { k:'坡下 · 钉着铜牌的那只', t:'第三封投出去了', lines:[
-        '铜牌是凉的。信塞进去的一瞬间，你听见里面有东西接住了它 —— 不是纸的声音。',
-        '坡下很静。有人在数数，数到三就停了，又从一数起。',
-        '信箱里传出一句很轻的话：「第 2 天，换你写信了。」',
-        '你抬头。极光正在变淡，像有人把灯拧小了一格。',
-        '<em>今夜到此为止。</em>'
-      ]},
-    ], ()=>{
-      chPush([{ k:'极夜邮局 · 交班', t:'第 1 天到此为止', lines:[
+    chPush([ N.C ], ()=>{
+      /* 演示只演第一夜：三封投完就收，不往下拖时间 */
+      if (typeof DEMO !== 'undefined' && DEMO && DEMO.on){
+        CH.done = true; chHudEl.classList.remove('on');
+        chPush([{ k:'极夜邮局 · 交班', t:'第 1 天到此为止', lines:[
+          '门还开着，灯还亮着。',
+          '你回到屋里，把灯放到床边。',
+          '<em>你不记得自己是什么时候躺下的。</em>'
+        ]}], null);
+        return;
+      }
+      chPush([{ k:'极夜邮局 · 交班', t:`第 ${CH.day} 天到此为止`, lines:[
         '门还开着，灯还亮着。',
-        '你回到屋里，把灯放到床边。',
-        '<em>你不记得自己是什么时候躺下的。</em>'
-      ]}], ()=> chDayBreak(2));
+        '三封信都出去了，一封都没少。',
+        '<em>回床上躺一会儿。</em>'
+      ]}], null);
+      if (CH.day === 2){
+        setTimeout(()=> chAfterCard(()=>{
+          if (CH.day !== 2) return;
+          showCaption('杯子是倒扣着的。你放的时候，杯口朝上。', 4200);
+          CH.terror++;                                  // 事件⑤
+        }), 4200);
+        /* 一闪而过 · 第 2 夜④：回屋门口，门外 3m 背对你 */
+        setTimeout(()=> chAfterCard(()=>{
+          if (CH.day !== 2) return;
+          chFlashDouble({ dist: 3, life: 1500, faceAway: true });
+          showCaption('它站在门口，像在等你开门。', 3000);
+        }), 11000);
+      }
     });
     return '';
   }
   return '这一封不是给它的';
 }
 
+/* 第 4 夜 · 三封投完：桌上多一本日记，邮包底下还剩一封（收信人是你） */
+function chFinale(){
+  CH.finale = true;
+  chHudEl.classList.remove('on');
+  if (chBeam) chBeam.visible = false;
+  chPush([{ k:'— 桌上 —', t:'第四封信', lines:[
+    '日记摊开着。最后一页落款「第 4 天」。今天就是第 4 天，可这一页还没有字。',
+    '邮包最底下还剩一封。不在投递簿上。收信人是你。'
+  ]}], null);
+}
+
+/* 第 4 夜 · 最后一封（收信人是你）：拆开 → 两个方向 */
+function chLastLetter(){
+  CH.lastRead = true;
+  CH.terror++;
+  chPush([{ k:'— 最后一封 —', t:'收信人：你', lines:[
+    '里面没有纸。',
+    '只有一根烧到一半的火柴。',
+    '和一句话：「不是所有信都要寄给别人。有些信，是寄给自己的。」',
+    '信封背面有一行字。你的字。',
+    '<span class="wrong">「丽芙，别回头。」</span>'
+  ]}], ()=> chNearBreath());
+  return '拆开了最后一封';
+}
+
+/* 第 4 夜 · 拆完最后一封：先静场，再让身后的呼吸接上，最后才给结局选项 */
+function chNearBreath(){
+  try { sound.muteUntil = performance.now() + 2200; } catch(e){}
+  try { sound.setIntensity(0.9); } catch(e){}
+  setTimeout(()=>{
+    showCaption('你身后有人在呼吸。和你的节奏一样。', 4600);
+    CH.terror++;
+    setTimeout(()=>{
+      if (CH.ending || CH.done) return;      // 已经选过结局就不再弹第二次
+      try { openChoice('ending'); } catch(e){}
+    }, 1800);
+  }, 2200);
+}
+
+/* ---------- v17 · 恐怖递进的四个小件（只在第 2 / 4 夜调用） ---------- */
+/* 等卡片关掉再执行：读信是玩家自愿停留的时刻，事件不能压在卡片上 */
+function chAfterCard(fn, tries){
+  tries = tries || 0;
+  /* 最多等 12 秒：卡片一直开着（玩家在读信）就先不打扰，但不能永远挂着 */
+  if (CH.pageOpen && tries < 48){ setTimeout(()=> chAfterCard(fn, tries + 1), 250); return; }
+  try { fn(); } catch(e){ console.error('[v17]', e); }
+}
+
+/* 有人在喊你的乳名。far=风雪里（远） / near=屋里（近，就在侧后方） */
+function chCallName(mode){
+  if (mode === 'near'){
+    showMonologue('— 屋里 —',
+      '有人喊你的名字。<br><span class="wrong">丽芙。</span><br>这一次，声音在屋里。',
+      { text:'丽芙。', opts:{ female:false, rate:0.68, pitch:0.58, volume:1 } }, 8000);
+    showCaption('喊声在屋里。就在你侧后方。你转过身，什么也没有。', 4200);
+    try { chQuietRed(1.0); } catch(e){}
+  } else {
+    showMonologue(MONOLOGUES.callName.kicker, MONOLOGUES.callName.text, MONOLOGUES.callName.voice, 8000);
+    showCaption('风雪里有人在喊。听不清是喊谁。', 3200);
+  }
+  CH.terror++;
+}
+
+/* 第 4 夜：门从里面被敲 —— 第 2 夜敲的是窗，这一夜敲的是你背后 */
+function chKnockInside(){
+  showCaption('门被敲了一下。从里面。', 2200);
+  try { sound.playKnockOnGlass(1); } catch(e){}
+  setTimeout(()=>{
+    try { sound.playKnockOnGlass(1); } catch(e){}
+    showCaption('又一下。这次在你背后。', 2200);
+  }, 2400);
+  CH.terror++;
+}
+
+/* 第 4 夜：三个分身进屋，堵在门口（屋内坐标，y 用 CABIN_Y） */
+function chTripleDouble(){
+  try { clearDoubles(); } catch(e){}
+  game.outsideCount = 0;
+  CH.double = null;
+  const spots = [[-0.9, CAB.d/2-1.7], [0.15, CAB.d/2-1.15], [1.15, CAB.d/2-1.8]];
+  for (let i = 0; i < spots.length; i++){
+    const d = CH_SPAWN_REAL();
+    if (!d) break;
+    d.x = IX(spots[i][0]); d.z = IZ(spots[i][1]);
+    d.y = CABIN_Y; d.indoor = true; d.behavior = 'stand';
+    d.root.position.set(d.x, d.y, d.z);
+    if (i === 0) CH.double = d;
+  }
+  CH.terror++;
+}
+
+/* 一闪而过：出现 → 定格 → 摘掉。不推剧情、不给选项、不锁操作 */
+function chFlashDouble(o){
+  o = o || {};
+  const d = CH_SPAWN_REAL();
+  if (!d) return null;
+  if (o.at){
+    d.x = o.at.x; d.z = o.at.z;
+  } else {
+    const ang  = player.yaw + (o.ang != null ? o.ang : 0.6);
+    const dist = o.dist || 9;
+    d.x = player.pos.x - Math.sin(ang) * dist;
+    d.z = player.pos.z - Math.cos(ang) * dist;
+  }
+  d.y = o.indoor ? CABIN_Y : Math.max(terrainHeight(d.x, d.z), SEA_LEVEL + 0.4);
+  d.indoor = !!o.indoor;
+  d.behavior = 'stand';
+  d.root.position.set(d.x, d.y, d.z);
+  d.root.rotation.y = o.faceAway
+    ? Math.atan2(-(player.pos.x - d.x), -(player.pos.z - d.z))
+    : Math.atan2(player.pos.x - d.x, player.pos.z - d.z);
+  setTimeout(()=>{
+    const i = doubles.indexOf(d);
+    if (i >= 0){ scene.remove(d.root); doubles.splice(i, 1); }
+  }, o.life || 1000);
+  return d;
+}
+
+/* 两个结局：复用现有的选择面板 + 结局面板，只换文案 */
+function chEndingChoice(kind){
+  const leave = (kind === 'leave');
+  /* v17：结局要盖在最上面，先把还开着的信卡收掉（否则卡片压在结局面板上） */
+  if (CH.pageOpen){
+    chWrap.classList.remove('on');
+    CH.pageOpen = false; CH.pages = []; CH.after = null;
+    game.viewing = false;
+  }
+  CH.ending = leave ? 'leave' : 'stay';
+  CH.done = true;
+  chHudEl.classList.remove('on');
+  if (chBeam) chBeam.visible = false;
+  chPush([{
+    k: leave ? '— 第 4 天 · 走 —' : '— 第 4 天 · 留 —',
+    t: leave ? '走向亮着灯的方向' : '回头看一眼',
+    lines: leave ? [
+      '极光变成金色。',
+      '木屋的灯一盏一盏亮起来。',
+      '有人在叫你的名字。三声，越来越近。',
+      '你睁眼。'
+    ] : [
+      '你把日记翻回第一页。',
+      '极光变成青白色。',
+      '雪地上三串脚印。',
+      '你在第一页写下「第 1 天」。'
+    ]
+  }], ()=>{
+    ended = true; game.ended = true;
+    if (document.pointerLockElement) document.exitPointerLock();
+    document.getElementById('endKicker').textContent = leave ? '第 4 天 · 06:12' : '第 1 天';
+    document.getElementById('endMain').innerHTML = leave ? '你活下来了。' : '第 1 天。';
+    document.getElementById('endSub').innerHTML = leave
+      ? '救援队找到你的时候，你手里还捏着一根烧到一半的火柴。<br>他们没有找到第四个人。'
+      : '日记从第 1 天重新开始。<br>信还在你手里。';
+    endingEl.classList.remove('hidden');
+  });
+}
+
+
 /* 键盘 E：统一入口 */
 function chDoAction(){
-  if (!CH.on || ended) return '';
+  if (!started || ended) return '';
+  /* 还没进屋（CH 没启动）：也给一句话，别让 E 像坏了 */
+  if (!CH.on){ chHint('先往亮着灯的木屋走'); return '先往亮着灯的木屋走'; }
   if (CH.pageOpen){ chAdvance(); return ''; }        // 卡片开着时，「查看」= 翻页
   /* 第一级：准星射线 —— 「我盯着它」就应该是我要交互的那个。
      以前只按 3m 内最近来挑，玩家的直觉和系统的判据对不上，
@@ -7567,6 +8159,9 @@ function chPickAim(){
     if (it.gone && it.gone()) continue;
     let p = null; try { p = it.pos(); } catch(e){ p = null; }
     if (!p) continue;
+    /* v17：小物件（杯子 1.1m / 椅子 1.2m）不该隔着桌子被射线抢走 ——
+       只对「显式写了 radius」的条目生效；没写 radius 的（信箱/信）保持原语义，远近都能瞄 */
+    if (it.rayR && Math.hypot(player.pos.x - p.x, player.pos.z - p.z) > it.rayR) continue;
     let dist = Infinity;
     let o = null; try { o = it.obj ? it.obj() : null; } catch(e){ o = null; }
     if (o){
@@ -7610,8 +8205,17 @@ function pressAction(){
   } catch(e){}
 
   if (typeof panelOpen !== 'undefined' && panelOpen){ panelNext(); return '（翻页）'; }
-  if (typeof choiceOpen !== 'undefined' && choiceOpen){ chHint('先选一项'); return '先选一项'; }
-  if (CH.pageOpen){ chAdvance(); return ''; }
+  if (typeof choiceOpen !== 'undefined' && choiceOpen){
+    chHint('点一个选项，或按 1 / 2 / 3'); return '先选一项';
+  }
+  if (CH.pageOpen){
+    const p = CH.pages[0];
+    /* 有选项的卡片不能靠 E 翻过去 —— 但也不能没反应 */
+    if (p && p.choices){ chHint('点一个选项，或按 1 / 2 / 3'); return '先选一项'; }
+    chAdvance(); return '';
+  }
+  /* 极光对峙：以前只能按 R，E 按下去像坏了。现在 E 也举灯。 */
+  if (CH.standoff){ chAuroraAnswer(); return '举灯'; }
   /* 观看模式以前直接把 E 吞了 —— 现在先退出来，再继续走交互 */
   if (game.viewing){ try { exitViewing(); } catch(e){} }
   if (typeof DEMO !== 'undefined' && DEMO && DEMO.on){ demoStop(true); return '已接管'; }
@@ -7661,27 +8265,46 @@ function chRunAtScreen(px, py){
    锁定中 = 点哪都是准星 → 直接 pressAction()（第一人称里左键就是「使用」）
    未锁定 = 鼠标可见，按点击位置就近拾取
    刚获得锁定的 200ms 内不响应 —— 那一下是玩家为了进游戏点的，不该算交互 */
-/* 画布左键（v15）：**双击**才算查看。
-   单击只记账 —— 以前单击就触发，和「点画面获取指针锁定」那一下撞在一起，
-   玩家经常莫名其妙点开一张卡片。现在第一下什么都不做，第二下（400ms 内）才执行。
-   锁定态鼠标坐标是冻结的，只能按时间判；未锁定才按点击位置就近拾取。 */
-let chLastDown = 0;
+/* 画布左键（v16）：**单击、双击都能交互**，但一次操作只算一次。
+   上一版只有双击，手感偏慢；再上一版只有单击，又和「点画面进游戏」撞车。
+   现在两条都留着，用 260ms 的去重窗口把双击的第二下吞掉 ——
+   单击立刻生效，双击也只生效一次，不会一次点开两张卡。 */
+let chLastDown = 0, chLastAct = 0;
+/* 光标下面 44px 内有没有浮标 —— 未锁定时「单击那一下」用它判断是不是真想交互 */
+function chTipAtPoint(px, py){
+  let best = null, bd = 44;
+  for (const it of INTERACT){
+    if (!it.tipOn || it.sx == null) continue;
+    const d = Math.hypot(it.sx - px, it.sy - py);
+    if (d < bd){ bd = d; best = it; }
+  }
+  return best;
+}
 canvas.addEventListener('pointerdown', e=>{
   if (!CH.on || ended) return;
   const now = performance.now();
   const dbl = (now - chLastDown) < 400;
   chLastDown = now;
-  if (chLockGrace && now - chLockGrace < 200) return;
-  if (document.pointerLockElement === canvas){ if (dbl) pressAction(); return; }
-  if (!dbl) return;
+  if (chLockGrace && now - chLockGrace < 200) return;   // 刚锁定的那一下是「进游戏」
+  if (now - chLastAct < 260) return;                    // 双击的第二下：已经算过了
+  if (document.pointerLockElement === canvas){
+    chLastAct = now; pressAction(); return;             // 锁定态：点哪都是准星
+  }
+  if (!dbl){
+    /* 未锁定单击：直接点在浮标上 = 就是想交互（点空地才是「进游戏」） */
+    const it = chTipAtPoint(e.clientX, e.clientY);
+    if (it){ chLastAct = now; chRunInteract(it.id); }
+    return;
+  }
   if (CH.pageOpen) return;
+  chLastAct = now;
   chRunAtScreen(e.clientX, e.clientY);
 });
 
 /* 常驻操作提示：先说清楚怎么按，别让玩家自己猜 */
 const chDblEl = document.createElement('div');
 chDblEl.id = 'chDblHint';
-chDblEl.textContent = '双击 · 查看　／　E 或回车也行';
+chDblEl.textContent = '单击或双击 · 查看　／　E 或回车也行';
 document.body.appendChild(chDblEl);
 function chDblShow(on){
   if (chDblEl.classList.contains('on') !== !!on) chDblEl.classList.toggle('on', !!on);
@@ -7730,6 +8353,9 @@ function chAuroraStandoff(){
   CH.standT = 0;
   chStandEl.classList.add('on');
   chPromptEl.classList.remove('on');
+  /* v16：对峙要按屏幕上的按钮 —— 先把指针锁定解掉，鼠标才看得见、点得到。
+     （以前只有 R 能用，鼠标压根点不着那个「举起灯」。） */
+  if (document.pointerLockElement) document.exitPointerLock();
   setAurora('red', 0.5);
   chHudUpdate();
 }
@@ -7837,7 +8463,15 @@ function chProofRight(){
       '然后它转身，朝林子里走。脚印和你的并排，一直到看不见。',
       '你低头看信：<em>湖边那条船 收</em>。'
     ]},
-  ], ()=>{ CH.step = 4; CH.forkArmed = true; chHudUpdate(); });
+  ], ()=>{ CH.step = 4; CH.forkArmed = true; chHudUpdate();
+    /* 一闪而过 · 第 2 夜②：对峙散了，回屋路上侧后方 6m */
+    if (CH.day === 2){
+      setTimeout(()=> chAfterCard(()=>{
+        if (CH.day !== 2) return;
+        chFlashDouble({ dist: 6, life: 900, ang: Math.PI * 0.75 });
+      }), 4200);
+    }
+  });
 }
 
 /* 岔路：两串脚印 */
@@ -7881,7 +8515,7 @@ function chTick(){
       chPush([
         { k:'极夜邮局 · 交接', t:'上一个守夜人走了', lines:[
           '他没留下名字，只留下三封信、一盒火柴，和一句写在门后的话：',
-          '「今夜把信投完。<em>极光变红就站着别动</em>，等它认完人。」'
+          '「每夜三封。投完，上床。<em>别问第 2 天为什么还是今天。</em>」'
         ]},
         { k:'投递簿', t:'今夜三个收件人', lines:[
           '灯塔看守人。',
@@ -7938,6 +8572,16 @@ function chTipHide(it){
   it.sx = null; it.sy = null; it.doneSince = 0;
 }
 /* C：所有登记过的东西都有浮标；18m 内带文字，18~30m 只留圆点，再远隐藏 */
+/* 准星射线缓存：每 100ms 最多算一次（16 个物件逐帧打射线会掉帧） */
+let chAimCache = null, chAimAt = 0, chAimEl = null;
+function chAimCached(){
+  const now = performance.now();
+  if (!chAimCache || now - chAimAt > 100){
+    chAimAt = now;
+    try { chAimCache = chPickAim(); } catch(e){ chAimCache = null; }
+  }
+  return chAimCache;
+}
 function chTipsUpdate(){
   if (!started || !CH.on) return;
   camera.updateMatrixWorld();     // 投影前先把相机矩阵刷到当前帧
@@ -8004,14 +8648,25 @@ function chTipsUpdate(){
     if (!it.tipOn){ el.classList.add('on'); it.tipOn = true; }
   }
   if (chReticle){
-    if (anyHit || CH.promptTxt) chReticle.classList.add('hit');
-    else chReticle.classList.remove('hit');
+    /* 准星 = 「这一下 E 会落在谁身上」。
+       以前只要 4.5m 内有东西就变橙，于是常出现「准星亮着、按 E 却说这儿没有能看的」。
+       现在直接问射线，和 pressAction 用同一套判据。 */
+    const a = chAimCached();
+    const hit = !!(a && !a.far && chEnabledOf(a.it).ok) || !!CH.promptTxt;
+    if (chReticle.classList.contains('hit') !== hit) chReticle.classList.toggle('hit', hit);
+    const aimIt = (a && !a.far) ? a.it : null;
+    if (chAimEl !== aimIt){
+      if (chAimEl && chAimEl.el) chAimEl.el.classList.remove('aim');
+      chAimEl = aimIt;
+      if (chAimEl && chAimEl.el) chAimEl.el.classList.add('aim');
+    }
   }
 }
 function chHudLoop(){
   requestAnimationFrame(chHudLoop);
   if (CH.on){ chHudUpdate(); chTipsUpdate(); chGuideUpdate(); chKnockTick(); }
   if (typeof chLookSync === 'function') chLookSync();   // 右下角「查看」按钮跟着刷新
+  if (typeof chCursorSync === 'function') chCursorSync(); // 有选项就把光标放出来
   if (typeof chDblShow === 'function'){
     chDblShow(CH.on && !ended && !CH.pageOpen && !panelOpen && !choiceOpen);
   }
@@ -8076,7 +8731,7 @@ function chTapN(n){
 }
 window.__SKARVIK__.tapCenter = ()=> chTapN(2);
 window.__SKARVIK__.tapOnce   = ()=> chTapN(1);
-window.__SKARVIK__.tapReset  = ()=>{ chLastDown = 0; return true; };
+window.__SKARVIK__.tapReset  = ()=>{ chLastDown = 0; chLastAct = 0; return true; };
 window.__SKARVIK__.dblLook  = ()=> window.__SKARVIK__.tapCenter();
 window.__SKARVIK__.actCount = ()=> chActN;
 window.__SKARVIK__.enterKey = ()=>{ window.dispatchEvent(new KeyboardEvent('keydown', { code:'Enter', bubbles:true })); return true; };
@@ -8095,6 +8750,7 @@ window.__SKARVIK__.setState = (o)=>{
   if ('choiceOpen' in o) choiceOpen = !!o.choiceOpen;
   if ('viewing'    in o) game.viewing = !!o.viewing;
   if ('pageOpen'   in o) CH.pageOpen = !!o.pageOpen;
+  if ('ended'      in o){ ended = !!o.ended; game.ended = !!o.ended; }
   return true;
 };
 window.__SKARVIK__.aim      = ()=>{ const a = chPickAim(); return a ? { id:a.it.id, d:+a.d.toFixed(2), far:a.far } : null; };
@@ -8202,9 +8858,21 @@ window.__SKARVIK__.day        = ()=> CH.day;
 window.__SKARVIK__.flags      = ()=> ({ day:CH.day, slept:CH.slept, knockDone:CH.knockDone,
   knockWatching:CH.knockWatching, day2Read:CH.day2Read, done:CH.done, delivered:CH.delivered,
   step:CH.step, pageOpen:CH.pageOpen, standoff:CH.standoff,
+  ending:CH.ending, finale:CH.finale, lastRead:CH.lastRead,
+  terror:CH.terror, chairMoved:CH.chairMoved,
   panelOpen:(typeof panelOpen !== 'undefined' && panelOpen),
   choiceOpen:(typeof choiceOpen !== 'undefined' && choiceOpen),
   viewing:!!game.viewing });
+/* v16：四夜 / 最后一封 / 两个结局 */
+window.__SKARVIK__.night      = (d)=>{ const N = NIGHT[d || CH.day]; return N ? JSON.parse(JSON.stringify(N)) : null; };
+window.__SKARVIK__.lastLetter = ()=>{ try { return chLastLetter(); } catch(e){ return 'ERR:' + e.message; } };
+window.__SKARVIK__.endingPick = (k)=>{ try { chEndingChoice(k); return CH.ending; } catch(e){ return 'ERR:' + e.message; } };
+window.__SKARVIK__.openEnding = ()=>{ try { openChoice('ending'); return true; } catch(e){ return 'ERR:' + e.message; } };
+window.__SKARVIK__.cursorOpen = ()=>({ body:document.body.classList.contains('uiopen'),
+  css:getComputedStyle(canvas).cursor });
+window.__SKARVIK__.cursorSync = ()=>{ chCursorSync(); return document.body.classList.contains('uiopen'); };
+window.__SKARVIK__.reticleHit  = ()=>({ hit:document.getElementById('reticle').classList.contains('hit'),
+  aim:(()=>{ const a=chPickAim(); return a ? { id:a.it.id, far:a.far } : null; })() });
 window.__SKARVIK__.setDay     = (d)=>{ CH.day = d; chHudUpdate(); return CH.day; };
 window.__SKARVIK__.dayBreak   = (d)=>{ chDayBreak(d); return true; };
 window.__SKARVIK__.sleep      = ()=> chSleep();
