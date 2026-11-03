@@ -1,0 +1,9 @@
+export class Soundscape{
+ constructor(){this.ctx=null;this.buffers={};this.volume=.28;this.muted=false;this.active=[];this.events=[];}
+ async start(){if(this.ctx){await this.ctx.resume();return;}const ctx=this.ctx=new AudioContext();this.master=ctx.createGain();this.master.gain.value=this.volume;this.master.connect(ctx.destination);await ctx.resume();await Promise.all(['wind','fire','step','chime','beacon'].map(async id=>{try{const response=await fetch(window.__POLAR_AUDIO?.[id]||'./assets/audio/'+id+'.wav');if(!response.ok)throw Error(id);this.buffers[id]=await ctx.decodeAudioData(await response.arrayBuffer());}catch(e){console.warn('Audio unavailable:',id,e.message);}}));this.wind=this.loop('wind',.35);this.fire=this.loop('fire',0);}
+ loop(id,volume){if(!this.buffers[id])return null;const s=this.ctx.createBufferSource(),g=this.ctx.createGain();s.buffer=this.buffers[id];s.loop=true;g.gain.value=volume;s.connect(g).connect(this.master);s.start();this.active.push(s);return g;}
+ play(id,rate=1,volume=.5){if(!this.ctx||!this.buffers[id])return;const s=this.ctx.createBufferSource(),g=this.ctx.createGain();s.buffer=this.buffers[id];s.playbackRate.value=rate;g.gain.value=volume;s.connect(g).connect(this.master);s.start();this.events.push(id);if(this.events.length>50)this.events.shift();s.onended=()=>{s.disconnect();g.disconnect();};}
+ // C major in equal temperament. chime.wav is synthesized with a C5 fundamental.
+ playNote(note,volume=.45){const semitones=[0,2,4,5,7,9,11];if(!Number.isInteger(note)||note<1||note>7)return false;this.play('chime',Math.pow(2,semitones[note-1]/12),volume);return true;}
+ update(inside,fireDistance,lit){if(!this.ctx)return;const t=this.ctx.currentTime;this.master.gain.setTargetAtTime(this.muted?0:this.volume,t,.15);this.wind?.gain.setTargetAtTime(inside?.07:.33,t,.5);this.fire?.gain.setTargetAtTime(lit?Math.max(0,.6-fireDistance*.065):0,t,.6);}
+}

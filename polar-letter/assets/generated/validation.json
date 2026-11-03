@@ -1,0 +1,34 @@
+{
+  "edge_difference_0_to_255": {
+    "snow_ground_basecolor": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    },
+    "ice_lake_basecolor": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    },
+    "ice_lake_cracks": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    },
+    "ice_lake_frost": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    },
+    "wood_basecolor": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    },
+    "crystal_detail": {
+      "left_right_mean": 0.0,
+      "top_bottom_mean": 0.0
+    }
+  },
+  "particle_alpha_extrema": [
+    0,
+    255
+  ],
+  "normal_method": "central differences of smoothed luminance-derived height, normalized XYZ",
+  "limits": "height and roughness are artistic estimates, not measured surface data"
+}

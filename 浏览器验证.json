@@ -1,0 +1,19 @@
+{
+  "stats": {
+    "shards": 13,
+    "snow": true,
+    "ice": true,
+    "sky": true,
+    "quality": false
+  },
+  "network": [],
+  "errors": [],
+  "checks": [
+    "standalone file, embedded audio",
+    "keyboard hold and hole",
+    "13 crystal targets",
+    "GLB export download",
+    "no quality switch"
+  ],
+  "note": "software WebGL, performance not representative of a physical GPU"
+}

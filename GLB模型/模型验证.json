@@ -1,0 +1,22 @@
+{
+  "crystal": {
+    "bytes": 3031460,
+    "meshes": 10,
+    "triangles": 162
+  },
+  "cabin": {
+    "bytes": 13902816,
+    "meshes": 87,
+    "triangles": 15780
+  },
+  "lake": {
+    "bytes": 14259940,
+    "meshes": 5,
+    "triangles": 448
+  },
+  "lighthouse": {
+    "bytes": 152260,
+    "meshes": 11,
+    "triangles": 1644
+  }
+}
